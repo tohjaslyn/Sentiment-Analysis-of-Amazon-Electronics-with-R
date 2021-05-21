@@ -1,0 +1,92 @@
+---
+title: "Amazon Electronics EDA"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(lattice)
+library(MASS)
+library(lubridate) 
+library(mdsr)
+library(scales)
+library(psych)
+library(tidyverse)
+amazon1 <- read.csv('Datafiniti_Amazon_Consumer_Reviews_of_Amazon_Products.csv')
+amazon1 = subset(amazon1, select = -c(asins, imageURLs, manufacturerNumber, reviews.sourceURLs, reviews.username, sourceURLs) )
+amazon1 <- mutate(amazon1, lineID = row_number())
+amazon1
+```
+
+```{r}
+library(tm)
+```
+
+```{r}
+corpus <- iconv(amazon1$reviews.text , to ="utf-8-mac")
+corpus <- Corpus(VectorSource(corpus))
+corpus <- tm_map(corpus, tolower)
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+cleanset <- tm_map(corpus, removeWords, stopwords('english'))
+#remove urls
+removeURL <- function(x) gsub('http[[:alnum:]]*', '' , x)
+cleanset <- tm_map(cleanset, removeWords, c('amazon'))
+cleanset <- tm_map(cleanset, content_transformer(removeURL))
+#get rid of whitespace
+
+cleanset <- tm_map(cleanset, stripWhitespace)
+inspect(cleanset[1:5])
+```
+
+```{r}
+#convert into structured data
+#Term doc matrix
+
+tdm <- TermDocumentMatrix(cleanset)
+tdm
+#look at sparsity
+```
+
+```{r}
+tdm <- as.matrix(tdm)
+tdm[1:10, 1:20]
+```
+
+```{r}
+#bar plot to see how often
+
+w <- sort(rowSums(tdm), decreasing = TRUE)
+w <- subset(w, w>=25)
+
+
+barplot(w[1:20], 
+        las = 2, 
+        col = rainbow(5))
+```
+
+```{r}
+library(wordcloud)
+```
+
+```{r}
+w <- sort(rowSums(tdm), decreasing = TRUE)
+set.seed(222)
+wordcloud(words = names(w),
+          freq = w,
+          max.words = 100,
+          random.order = F,
+          min.freq = 25,
+          colors = brewer.pal(8, 'Dark2'))
+```
+
+
+
+
+
+
