@@ -1,0 +1,216 @@
+---
+title: "Amazon Electronics Consumer Reviews Sentiment Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(tidyverse)
+library(tidytext)
+library(caTools)
+library(caret)
+library(RSNNS)
+library(e1071)
+library(sentimentr)
+library(quanteda)
+library(quanteda.textmodels)
+library(ROCR)
+amazon <- read.csv('Datafiniti_Amazon_Consumer_Reviews_of_Amazon_Products.csv')
+amazon = subset(amazon, select = -c(asins, imageURLs, manufacturerNumber, reviews.sourceURLs, reviews.username, sourceURLs) )
+```
+
+```{r}
+glimpse(amazon)
+```
+```{r}
+new <- amazon %>% group_by(primaryCategories) %>%  summarise( reviews.rating = mean(reviews.rating))
+ggplot(data = new, aes(x = primaryCategories, y = reviews.rating, fill = primaryCategories ) ) +
+   geom_bar(stat = "identity") +
+   theme_minimal()
+ggplot(data = new, aes(x = primaryCategories, y = reviews.rating, fill = primaryCategories ) ) +
+   geom_point(stat = "identity") +
+   theme_minimal()
+new
+```
+
+```{r}
+summary(amazon$reviews.rating)
+```
+
+
+```{r}
+amazon$length_review <- nchar(amazon$reviews.text)
+summary(amazon$length_review)
+```
+```{r}
+ggplot(data = amazon, aes(x = reviews.rating, y = length_review )) +
+   geom_point(size=  3, aes(color =  reviews.rating ) ) 
+
+```
+
+
+```{r}
+ggplot(data = amazon, aes(x = reviews.numHelpful, y = length_review )) +
+   geom_point(size=  3, aes(color =  reviews.numHelpful ) ) 
+
+```
+
+
+```{r}
+ggplot(data = amazon, aes(x = reviews.rating, y = length_review )) +
+   geom_bar(stat = "identity",  fill="steelblue")+
+   theme_minimal()
+
+```
+
+```{r}
+amazon <- as_tibble(amazon)
+amazon
+
+# Remove records with no reviewText & no overall score
+amazon %>% filter(!is.na(reviews.text)) %>%  filter(!is.na(reviews.rating)) -> amazon
+
+
+# Convert overall score to sentiment categories
+
+amazon$Sentiment <- dplyr::case_when(
+  amazon$reviews.rating >3 ~ "Pos",
+  TRUE ~ "Neg"
+)
+
+amazon$Pos_int <- dplyr::case_when(
+  amazon$reviews.rating >3 ~ 1,
+  TRUE ~ 0
+)
+
+amazon$Pos <- dplyr::case_when(
+  amazon$reviews.rating >3 ~ TRUE,
+  TRUE ~ FALSE
+)
+
+```
+
+
+```{r}
+Amazon_corpus <- corpus(amazon$reviews.text)
+#summary(Amazon_corpus)
+
+```
+
+```{r}
+trainIndex <- sample.split( amazon$Sentiment, SplitRatio = 0.5, group = NULL )
+
+docvars(Amazon_corpus, "train") <- trainIndex
+#summary(Amazon_corpus)
+
+```
+
+```{r}
+Amazon_dfm <- dfm(Amazon_corpus, stem=TRUE, remove = stopwords("english"),
+                  remove_punct = TRUE, remove_symbols = TRUE, 
+                  remove_numbers = TRUE, remove_url = TRUE)
+
+head(Amazon_dfm, n = 5)
+
+```
+
+```{r}
+Amazon_dfm <- dfm_trim(Amazon_dfm, min_docfreq = 30, min_termfreq = 30, verbose = TRUE)
+
+
+# Calculate tf*idf
+Amazon_dfm_tfidf <- dfm_tfidf(Amazon_dfm, scheme_tf="count", scheme_df="inverse",
+  base = 2, force = FALSE, threshold=30)
+
+
+# Create training and test sets
+Amazon_dfm_train <- dfm_subset(Amazon_dfm_tfidf, train==TRUE)
+Amazon_dfm_test <- dfm_subset(Amazon_dfm_tfidf, train==FALSE)
+
+
+# Build Naive Bayes model
+Amazon_nb <- textmodel_nb(Amazon_dfm_train, amazon$Sentiment[trainIndex], prior="docfreq")
+
+#summary(Amazon_nb)
+#coef(Amazon_nb)
+
+```
+
+
+```{r}
+
+# Apply NB model to test set
+# predict.textmodel_nb
+Amazon_nb_prob <- predict(Amazon_nb, newdata=Amazon_dfm_test, type="prob")
+Amazon_nb_pred <- predict(Amazon_nb, newdata=Amazon_dfm_test, type="class")
+```
+
+```{r}
+Amazon_svm <- textmodel_svm(Amazon_dfm_train, amazon$Sentiment[trainIndex], weight="docfreq")
+summary(Amazon_svm)
+# Apply SVM to test set
+# predict.textmodel_svm
+Amazon_svm_prob <- predict(Amazon_svm, newdata=Amazon_dfm_test, type="probability")
+Amazon_svm_pred <- predict(Amazon_svm, newdata=Amazon_dfm_test, type="class")
+
+## Create confusion matrix using Caret
+# Convert to factors with correct levels
+testTarget <- factor(amazon$Sentiment[!trainIndex], levels=c("Pos","Neg"))
+Amazon_nb_pred <- factor(Amazon_nb_pred, levels=c("Pos","Neg"))
+Amazon_svm_pred <- factor(Amazon_svm_pred, levels=c("Pos","Neg"))
+
+caret::confusionMatrix(data=Amazon_nb_pred, reference=testTarget, mode="everything")
+caret::confusionMatrix(data=Amazon_svm_pred, reference=testTarget, mode="everything")
+```
+
+```{r}
+## Generate evaluation charts using ROCR package
+# Create the prediction objects:
+pred_nb <- prediction(Amazon_nb_prob[,"Pos"], testTarget)
+pred_svm <- prediction(Amazon_svm_prob[,"Pos"], testTarget)
+```
+
+```{r}
+# Create performance objects for ROC curve:
+perf_nb <- performance(pred_nb,"tpr","fpr") 
+perf_svm <- performance(pred_svm,"tpr","fpr") 
+# Plot the graphs:
+plot(perf_nb)
+plot(perf_svm,add = TRUE)
+
+```
+
+```{r}
+perf_nb <- performance(pred_nb,"prec") 
+perf_svm <- performance(pred_svm,"prec") 
+plot(perf_nb)
+plot(perf_svm, add=TRUE)
+
+```
+
+
+```{r}
+# Create performance objects for gains chart
+perf_nb <- performance(pred_nb,"rec") 
+perf_svm <- performance(pred_svm,"rec") 
+plot(perf_nb)
+plot(perf_svm, add=TRUE)
+```
+
+
+```{r}
+Amazon_dfm_train_dataframe <- quanteda::convert(Amazon_dfm_train, to="data.frame")
+Amazon_dfm_test_dataframe <- quanteda::convert(Amazon_dfm_test, to="data.frame")
+
+
+# Check memory
+memory.size()
+memory.size(max=TRUE)
+memory.limit(size = 30000)
+
+```
+
